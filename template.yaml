@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Globals:
+  Function:
+    Environment:
+      Variables:
+        ServiceTable: !Join [ '', [ 'Service'] ]
+        MockTable: !Join [ '', [ 'Mock'] ]
+  # Api:
+  #   TracingEnabled: True
+  #   MethodSettings:
+  #     - MetricsEnabled: False
+  #       DataTraceEnabled: True
+  #       ResourcePath: "/*"
+  #       HttpMethod: "*"
+
+Parameters:
+  ServiceSubDomainName:
+    Type: String
+    Default: 'boilerplate'
+  RootUrl:
+    Type: String
+    Default: '{{resolve:ssm:/account/root-url:1}}'
+  SslCert: 
+    Type: String
+    Default: '{{resolve:ssm:/account/ssl-cert:1}}'
+  Namespace:
+    Type: String
+    Default: ''
+
+Resources:
+    Builder:
+      Type: AWS::Serverless::Application
+      Properties:
+        Location: ./builder.yaml
+    
+    CloudFront:
+      Type: AWS::Serverless::Application
+      Properties:
+        Location: ./cloudfront.yaml
+        Parameters: 
+          ServiceApi: !Ref ServiceApi
+          ServiceApiStage: !Ref ServiceApi.Stage
+
+
+    ServiceApi:
+      Type: AWS::Serverless::Api
+      Properties:
+        DefinitionUri: ./api.yaml
+        StageName: Prod
+        Variables:
+          ServiceApiFunction: !Ref ServiceApiFunction
+    
+    # APIBasePathMapping:
+    #     Type: 'AWS::ApiGateway::BasePathMapping'
+    #     Properties:
+    #       Stage: !Ref ServiceApi.Stage
+    #       DomainName: !Ref APIDomainName
+    #       RestApiId: !Ref ServiceApi
+    
+    # APIDomainName:
+    #   Type: 'AWS::ApiGateway::DomainName'
+    #   Properties:
+    #     SecurityPolicy: TLS_1_2
+    #     RegionalCertificateArn:
+    #       Ref: SslCert
+    #     DomainName:
+    #       Fn::Join: [ '', [ Ref: ServiceSubDomainName,'.', Ref: Namespace, '.', Ref: RootUrl ] ]
+    #     EndpointConfiguration:
+    #       Types: ['REGIONAL']
+    
+    # APIDomain:
+    #   Type: 'AWS::Route53::RecordSetGroup'
+    #   Properties:
+    #     HostedZoneName:
+    #       Fn::Join: [ '', [ Ref: RootUrl, '.' ] ]
+    #     RecordSets:
+    #       - Name:
+    #           Ref: APIDomainName
+    #         Type: A
+    #         AliasTarget:
+    #           DNSName:
+    #             Fn::GetAtt: [APIDomainName, RegionalDomainName]
+    #           HostedZoneId:
+    #             Fn::GetAtt: [APIDomainName, RegionalHostedZoneId]
+
+                
+    ServiceApiFunction:
+      Type: AWS::Serverless::Function
+      Properties:
+        CodeUri: ./service
+        Handler: index.lambda_handler
+        MemorySize: 256
+        Runtime: nodejs12.x
+        Timeout: 30
+        Policies:
+          - Statement:
+              [{
+                  "Effect": "Allow",
+                  "Action": ["dynamodb:*","s3:*"],
+                  "Resource": "*"
+              }]
+        Events:
+          ProxyApiRoot:
+            Type: Api
+            Properties:
+              RestApiId: !Ref ServiceApi
+              Path: /api/
+              Method: ANY
+          ProxyApiGreedy:
+            Type: Api
+            Properties:
+              RestApiId: !Ref ServiceApi
+              Path: /api/{proxy+}
+              Method: ANY
+              
+ 
+Outputs:
+  # APIDomainName:
+  #   Description: 'API domain name'
+  #   Value:
+  #     Ref: APIDomainName
+  LambdaServiceApiLogs:
+    Description: "Api Lambda Logs"
+    Value: !Sub "https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logStream:group=/aws/lambda/${ServiceApiFunction};streamFilter=typeLogStreamPrefix"
+

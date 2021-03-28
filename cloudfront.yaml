@@ -1,0 +1,167 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless Express Microfrontend
+
+Parameters:
+  ServiceSubDomainName:
+    Type: String
+    Default: 'boilerplate'
+  RootUrl:
+    Type: String
+    Default: '{{resolve:ssm:/account/root-url:1}}'
+  SslCert: 
+    Type: String
+    Default: '{{resolve:ssm:/account/ssl-cert:1}}'
+  Namespace:
+    Type: String
+    Default: ''
+  ServiceApi:
+    Type: String
+    Default: ''
+  ServiceApiStage:
+    Type: String
+    Default: ''
+      
+Resources:
+  StaticS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join [ '', [ !Ref ServiceSubDomainName, !Ref Namespace, '.', !Ref RootUrl ] ]
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedOrigins: ['*']
+            AllowedMethods: [GET]
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  StaticS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'StaticS3Bucket'
+      PolicyDocument:
+        Statement:
+          - Action: s3:GetObject
+            Effect: Allow
+            Resource: !Join ['/', [!GetAtt 'StaticS3Bucket.Arn', '*']]
+            Principal:
+              CanonicalUser: !GetAtt 'CloudFrontOriginAccessIdentity.S3CanonicalUserId'
+          - Action: s3:PutObject
+            Effect: Allow
+            Resource: !Join ['/', [!GetAtt 'StaticS3Bucket.Arn', '*']]
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:user/git"
+  
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Ref 'StaticS3Bucket'
+  
+  # CachePolicy:
+  #   Type: AWS::CloudFront::CachePolicy
+  #   Properties: 
+      # CachePolicyConfig: 
+        # DefaultTTL: Double
+        # MaxTTL: Double
+        # MinTTL: Double
+        # Name: String
+        # ParametersInCacheKeyAndForwardedToOrigin: 
+        #   ParametersInCacheKeyAndForwardedToOrigin
+  BoilerplateCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        PriceClass: PriceClass_100
+        Aliases: 
+          - !Join [ '', [ !Ref ServiceSubDomainName, !Ref Namespace, '.', !Ref RootUrl ] ]
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - HEAD
+            - OPTIONS
+            - GET
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          ForwardedValues:
+            QueryString: true
+          DefaultTTL: 30
+          MaxTTL: 30
+          MinTTL: 15
+          TargetOriginId: s3-website
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+        CacheBehaviors:
+          -
+            AllowedMethods:
+              - HEAD
+              - OPTIONS
+              - GET
+              - POST
+              - DELETE
+              - PUT
+              - PATCH
+            TargetOriginId: apigw
+            Compress: true
+            PathPattern: /api/*
+            MaxTTL: '0'
+            MinTTL: '0'
+            DefaultTTL: '0'
+            ViewerProtocolPolicy: redirect-to-https
+            ForwardedValues: 
+              QueryString: true
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 30
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCachingMinTTL: 30
+            ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        DefaultRootObject: ''
+        Enabled: true
+        IPV6Enabled: true
+        Logging:
+          Bucket: !Join ['',[!Ref 'StaticS3Bucket', '.s3.amazonaws.com']]
+          IncludeCookies: true
+          Prefix: CloudFrontLogs/
+        Origins:
+          - DomainName: !GetAtt 'StaticS3Bucket.DomainName'
+            Id: s3-website
+            S3OriginConfig:
+              OriginAccessIdentity: !Join ['/',['origin-access-identity', 'cloudfront', !Ref 'CloudFrontOriginAccessIdentity']]
+          - DomainName: !Join ['.',[!Ref ServiceApi, 'execute-api', !Ref 'AWS::Region', 'amazonaws.com']]
+            Id: apigw
+            CustomOriginConfig:
+              HTTPSPort: '443'
+              OriginProtocolPolicy: https-only
+            OriginPath: !Join ['/', ['',!Ref ServiceApiStage]]
+            # OriginCustomHeaders:
+            #   -
+            #     HeaderName: Auth
+                # HeaderValue: 
+        ViewerCertificate:
+          AcmCertificateArn: !Ref 'SslCert'
+          MinimumProtocolVersion: TLSv1.2_2018
+          SslSupportMethod: sni-only
+      Tags:
+        - Key: owasp-waf
+          Value: secure
+
+  SiteAliases:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: !Join [ '', [ !Ref RootUrl, '.' ] ]
+      RecordSets:
+        - Name: !Join [ '', [ !Ref ServiceSubDomainName, '.', !Ref RootUrl ] ]
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt 'BoilerplateCloudFront.DomainName'
+            HostedZoneId: Z2FDTNDATAQYW2
